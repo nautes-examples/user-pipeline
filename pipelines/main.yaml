@@ -185,5 +185,5 @@ spec:
           requests:
             storage: 500M
   - name: dockerconfig-volume
-    secret:
+    configMap:
       name: registry-auth
