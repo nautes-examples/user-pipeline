@@ -132,7 +132,7 @@ spec:
         workspace: dockerconfig-volume
       params:
       - name: IMAGE
-        value: $registry-url/devops-sample:0.0.1-$(tasks.git-clone-sourcecode.results.commit)
+        value: $registry-url/devops-sample:$(tasks.git-clone-sourcecode.results.commit)
       - name: DOCKERFILE
         value: ./sourcecode/Dockerfile
       - name: CONTEXT

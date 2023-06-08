@@ -1,0 +1,133 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  name: release-pipiline
+spec:
+  params:
+  - name: REVISION
+    value: main
+  taskRunSpecs:
+  - pipelineTaskName: git-clone-sourcecode
+    taskServiceAccountName: nautes-sa
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: 'true'
+        vault.hashicorp.com/agent-pre-populate-only: "true"
+        vault.hashicorp.com/tls-secret: "ca"
+        vault.hashicorp.com/ca-cert: "/vault/tls/ca.crt"
+        vault.hashicorp.com/role: '$pipeline-runtime-name'
+        vault.hashicorp.com/agent-run-as-user: '0' 
+        vault.hashicorp.com/agent-run-as-group: '0'
+        vault.hashicorp.com/agent-inject-secret-id_ecdsa: "git/data/gitlab/repo-$sc-repo-id/default/readonly"
+        vault.hashicorp.com/secret-volume-path-id_ecdsa: "/root/.ssh"
+        vault.hashicorp.com/agent-inject-perms-id_ecdsa: '0400'
+        vault.hashicorp.com/agent-inject-template-id_ecdsa: |
+          {{- with secret "git/data/gitlab/repo-$sc-repo-id/default/readonly" -}}
+          {{ .Data.data.deploykey }}
+          {{- end -}}
+  pipelineSpec:
+    params:
+      - name: REVISION
+        type: string
+        description: Revision to checkout. (branch, tag, sha, ref, etc...)
+        default: ""
+    tasks:
+    - name: git-clone-sourcecode
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      workspaces:
+      - name: output
+        workspace: source-volume
+      params:
+      - name: url
+        value: $sc-repo-url
+      - name: revision
+        value: $(params.REVISION)
+      - name: subdirectory
+        value: sourcecode
+    - name: parse-tag-name
+      runAfter:
+      - git-clone-sourcecode
+      params:
+      - name: REVISION
+        value: "$(params.REVISION)"
+      taskSpec:
+        params:
+        - name: REVISION
+        steps:
+        - name: parse-tag-name
+          image: bash
+          script: |
+            #!/usr/bin/env sh
+            set -eu
+            output=`echo "$(params.REVISION)" | cut -d '/' -f 3`
+            echo -n $output | tee "$(results.tag_name.path)"
+        results:
+        - name: tag_name
+    - name: mvn-build
+      runAfter:
+      - parse-tag-name
+      taskRef:
+        name: maven
+        kind: ClusterTask
+      workspaces:
+      - name: source
+        workspace: source-volume
+      - name: maven-settings
+        workspace: empty-dir
+      - name: maven-repository
+        workspace: maven-repository-volume
+      params:
+      - name: GOALS
+        value: 
+          - -DskipTests
+          - clean
+          - install
+          - -f
+          - sourcecode/pom.xml
+    - name: image-build
+      runAfter:
+      - mvn-build
+      taskRef:
+        name: kaniko
+        kind: ClusterTask
+      workspaces:
+      - name: source
+        workspace: source-volume
+      - name: dockerconfig
+        workspace: dockerconfig-volume
+      params:
+      - name: IMAGE
+        value: $registry-url/devops-sample:$(tasks.parse-tag-name.results.tag_name)
+      - name: DOCKERFILE
+        value: ./sourcecode/Dockerfile
+      - name: CONTEXT
+        value: ./sourcecode
+    workspaces:
+    - name: source-volume
+    - name: empty-dir
+    - name: maven-repository-volume
+    - name: dockerconfig-volume
+  workspaces:
+  - name: empty-dir
+    emptyDir: {}
+  - name: source-volume
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50M
+  - name: maven-repository-volume
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 500M
+  - name: dockerconfig-volume
+    configMap:
+      name: registry-auth
